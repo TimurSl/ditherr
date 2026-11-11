@@ -4,7 +4,8 @@ An open-source desktop dithering tool: one shared engine, several workspaces on 
 (Quick Stylize, Studio, Animation, 3D Texture, Batch). See
 [`docs/Universal Dithering Software Functional Specification.md`](docs/Universal%20Dithering%20Software%20Functional%20Specification.md).
 
-**Status:** milestone M1: the engine and CLI work; there is no GUI yet.
+**Status:** milestone M2: the engine, the CLI and the Quick Stylize window work. Studio, Animation,
+3D Texture and batch are still to come.
 
 ## Quick start
 
@@ -13,7 +14,17 @@ nix develop            # or install stable Rust
 cargo run --release -p ditherr-cli -- apply photo.jpg --look looks/gameboy.ditherlook -o out.png
 cargo run --release -p ditherr-cli -- palette list
 cargo run --release -p ditherr-cli -- palette extract photo.jpg -n 8 --method kmeans
+cargo run --release -p ditherr-app -- photo.jpg    # Quick Stylize window
 ```
+
+## Quick Stylize
+
+`ditherr-app [image]` opens a window with a gallery of live thumbnails (Game Boy, Newspaper,
+Macintosh 1-bit, CGA, E-ink, Risograph), five controls (pixel size, colours, dither strength,
+contrast, palette), **Randomize** for variations, and PNG/GIF export at 1x, 2x or 4x. Drop an image
+on the window or use **Open…**; hold Space to compare with the original. The preview renders on a
+background thread through `ditherr-core`; images over 2048 px are shrunk for preview only, and
+export always renders the full-size original. At 1x an export matches the source size.
 
 `apply` writes indexed PNG at true bit depth (1, 2, 4 or 8) when the palette allows it; GIF, BMP,
 TIFF and lossless WebP output are chosen by file extension. The `looks/` directory holds example
@@ -45,7 +56,7 @@ on Linux, Windows and macOS. If engine output changes on purpose, regenerate the
 | `ditherr-io` | Image, GIF, palette, look and project file I/O. |
 | `ditherr-3d` | Model import, UV/seam analysis, texture sets. |
 | `ditherr-cli` | `ditherr` command-line tool. |
-| `ditherr-app` | egui application. |
+| `ditherr-app` | egui application (Quick Stylize). |
 
 The GUI and CLI contain no pixel logic; everything goes through `ditherr-core`.
 
