@@ -1,0 +1,18 @@
+# The engine must give bit-identical output on every platform, so transcendental
+# functions come from the pure-Rust `libm` crate rather than the platform libm.
+disallowed-methods = [
+    { path = "f32::powf", reason = "use libm::powf for cross-platform determinism" },
+    { path = "f32::powi", reason = "use multiplication or libm::powf" },
+    { path = "f32::exp", reason = "use libm::expf" },
+    { path = "f32::exp2", reason = "use libm::exp2f" },
+    { path = "f32::ln", reason = "use libm::logf" },
+    { path = "f32::log2", reason = "use libm::log2f" },
+    { path = "f32::log10", reason = "use libm::log10f" },
+    { path = "f32::sin", reason = "use libm::sinf" },
+    { path = "f32::cos", reason = "use libm::cosf" },
+    { path = "f32::tan", reason = "use libm::tanf" },
+    { path = "f32::atan2", reason = "use libm::atan2f" },
+    { path = "f32::cbrt", reason = "use libm::cbrtf" },
+    { path = "f32::hypot", reason = "use sqrt of sum of squares" },
+    { path = "f32::mul_add", reason = "fused multiply-add differs across targets" },
+]

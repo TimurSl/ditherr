@@ -1,0 +1,23 @@
+// Ditherr look, format version 1
+(
+    version: 1,
+    name: "PICO-8 Bayer",
+    preprocess: [],
+    pixel_scale: 2,
+    palette: Preset("pico8"),
+    metric: Oklab,
+    algorithm: Bayer(
+        size: 8,
+    ),
+    params: (
+        strength: 1.0,
+        serpentine: true,
+        scan: LeftToRight,
+        bias: 0.0,
+        jitter: 0.0,
+        error_clamp: Auto,
+        linear_light: true,
+        seed: 0,
+    ),
+    background: (255, 255, 255),
+)

@@ -1,0 +1,23 @@
+// Ditherr look, format version 1
+(
+    version: 1,
+    name: "4-level gray, blue noise",
+    preprocess: [],
+    pixel_scale: 1,
+    palette: Gray(
+        levels: 4,
+    ),
+    metric: Oklab,
+    algorithm: BlueNoise,
+    params: (
+        strength: 1.0,
+        serpentine: true,
+        scan: LeftToRight,
+        bias: 0.0,
+        jitter: 0.0,
+        error_clamp: Auto,
+        linear_light: true,
+        seed: 0,
+    ),
+    background: (255, 255, 255),
+)

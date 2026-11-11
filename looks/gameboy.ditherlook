@@ -1,0 +1,26 @@
+// Ditherr look, format version 1
+(
+    version: 1,
+    name: "Game Boy",
+    preprocess: [
+        Grayscale(
+            weights: (0.2126, 0.7152, 0.0722),
+        ),
+        Contrast(0.25),
+    ],
+    pixel_scale: 3,
+    palette: Preset("gameboy"),
+    metric: Oklab,
+    algorithm: ErrorDiffusion(FloydSteinberg),
+    params: (
+        strength: 1.0,
+        serpentine: true,
+        scan: LeftToRight,
+        bias: 0.0,
+        jitter: 0.0,
+        error_clamp: Auto,
+        linear_light: true,
+        seed: 0,
+    ),
+    background: (255, 255, 255),
+)

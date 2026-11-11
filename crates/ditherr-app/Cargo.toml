@@ -1,0 +1,21 @@
+[package]
+name = "ditherr-app"
+description = "Ditherr desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "ditherr-app"
+path = "src/main.rs"
+
+[dependencies]
+ditherr-core.workspace = true
+ditherr-io.workspace = true
+ditherr-3d.workspace = true

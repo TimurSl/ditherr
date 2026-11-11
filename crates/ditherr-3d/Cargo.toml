@@ -1,0 +1,18 @@
+[package]
+name = "ditherr-3d"
+description = "Model import, UV analysis and texture-set processing for Ditherr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ditherr-core.workspace = true
+
+[dev-dependencies]
+ditherr-io.workspace = true
