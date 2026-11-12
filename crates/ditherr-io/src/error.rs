@@ -9,6 +9,10 @@ pub enum Error {
     Encode(String),
     /// A look file could not be parsed or serialised.
     Look(String),
+    /// A palette file could not be parsed or written.
+    Palette(String),
+    /// A project file could not be parsed or written.
+    Project(String),
     Core(ditherr_core::Error),
 }
 
@@ -21,6 +25,8 @@ impl fmt::Display for Error {
             Error::Decode(m) => write!(f, "cannot read image: {m}"),
             Error::Encode(m) => write!(f, "cannot write image: {m}"),
             Error::Look(m) => write!(f, "look file: {m}"),
+            Error::Palette(m) => write!(f, "palette file: {m}"),
+            Error::Project(m) => write!(f, "project file: {m}"),
             Error::Core(e) => write!(f, "{e}"),
         }
     }

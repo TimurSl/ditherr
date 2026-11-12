@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use ditherr_core::extract::extract;
-use ditherr_core::{presets, AutoMethod, Look, Rendered};
+use ditherr_core::{presets, AutoMethod, Look, PaletteSpec, Rendered};
+use ditherr_io::PaletteFile;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -47,13 +48,17 @@ pub struct ApplyArgs {
     /// Override the look's random seed.
     #[arg(long)]
     pub seed: Option<u64>,
+    /// Use the colours of a palette file (.gpl, .hex, .pal, .act) instead of the look's palette.
+    #[arg(long, value_name = "FILE")]
+    pub palette: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum PaletteCommand {
     /// List the built-in preset palettes.
     List,
-    /// Extract a palette from an image and print it as hex, one colour per line.
+    /// Extract a palette from an image. Prints it as hex, one colour per line, unless
+    /// `--output` names a palette file.
     Extract {
         input: PathBuf,
         /// Number of colours (2 to 256).
@@ -61,7 +66,13 @@ pub enum PaletteCommand {
         colors: u16,
         #[arg(short, long, value_enum, default_value_t = Method::MedianCut)]
         method: Method,
+        /// Write a palette file instead of printing; the extension (.gpl, .hex, .pal, .act)
+        /// picks the format.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
+    /// Convert a palette file to another format by extension (.gpl, .hex, .pal, .act).
+    Convert { input: PathBuf, output: PathBuf },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -112,6 +123,10 @@ fn apply(args: &ApplyArgs, out: &mut impl std::io::Write) -> Result<(), CliError
     if let Some(seed) = args.seed {
         look.params.seed = seed;
     }
+    if let Some(path) = &args.palette {
+        let file = ditherr_io::read_palette(path)?;
+        look.palette = PaletteSpec::Custom(file.colors);
+    }
     let factor = args.upscale.unwrap_or(look.pixel_scale);
     if factor == 0 {
         return Err(CliError("--upscale must be at least 1".into()));
@@ -154,6 +169,7 @@ fn palette(cmd: PaletteCommand, out: &mut impl std::io::Write) -> Result<(), Cli
             input,
             colors,
             method,
+            output,
         } => {
             if !(2..=256).contains(&colors) {
                 return Err(CliError("--colors must be between 2 and 256".into()));
@@ -167,9 +183,41 @@ fn palette(cmd: PaletteCommand, out: &mut impl std::io::Write) -> Result<(), Cli
                 .filter(|p| p[3] > 127)
                 .map(|p| [p[0], p[1], p[2]])
                 .collect();
-            for c in extract(method.into(), &pixels, usize::from(colors)) {
-                writeln!(out, "{:02x}{:02x}{:02x}", c[0], c[1], c[2])?;
+            let extracted = extract(method.into(), &pixels, usize::from(colors));
+            match output {
+                Some(path) => {
+                    let name = input
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let file = PaletteFile {
+                        name,
+                        colors: extracted,
+                    };
+                    ditherr_io::write_palette(&path, &file)?;
+                    writeln!(
+                        out,
+                        "wrote {} ({} colours)",
+                        path.display(),
+                        file.colors.len()
+                    )?;
+                }
+                None => {
+                    for c in extracted {
+                        writeln!(out, "{:02x}{:02x}{:02x}", c[0], c[1], c[2])?;
+                    }
+                }
             }
+        }
+        PaletteCommand::Convert { input, output } => {
+            let file = ditherr_io::read_palette(&input)?;
+            ditherr_io::write_palette(&output, &file)?;
+            writeln!(
+                out,
+                "wrote {} ({} colours)",
+                output.display(),
+                file.colors.len()
+            )?;
         }
     }
     Ok(())

@@ -200,3 +200,70 @@ fn palette_commands() {
         .status
         .success());
 }
+
+#[test]
+fn palette_files_extract_convert_and_apply() {
+    let dir = Scratch::new("palfiles");
+    let input = dir.path("input.png");
+    write_input(&input, 32, 32);
+
+    // Extract straight to each file format, then convert between them.
+    let gpl = dir.path("p.gpl");
+    let out = run(&["palette", "extract", s(&input), "-n", "6", "-o", s(&gpl)]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("colours)"));
+    let extracted = ditherr_io::read_palette(&gpl).unwrap();
+    assert!(!extracted.colors.is_empty() && extracted.colors.len() <= 6);
+    assert_eq!(extracted.name, "input");
+
+    let mut previous = gpl.clone();
+    for ext in ["hex", "pal", "act", "gpl"] {
+        let next = dir.path(&format!("c.{ext}"));
+        let out = run(&["palette", "convert", s(&previous), s(&next)]);
+        assert!(
+            out.status.success(),
+            "{ext}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            ditherr_io::read_palette(&next).unwrap().colors,
+            extracted.colors,
+            "{ext}"
+        );
+        previous = next;
+    }
+
+    // `apply --palette` is the same as putting the colours in the look.
+    let output = dir.path("out.png");
+    let out = run(&["apply", s(&input), "--palette", s(&gpl), "-o", s(&output)]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let look = ditherr_core::Look {
+        palette: ditherr_core::PaletteSpec::Custom(extracted.colors),
+        ..ditherr_core::Look::default()
+    };
+    let src = ditherr_io::read_image(&input).unwrap();
+    let expected = ditherr_core::render(&src, &look).unwrap().upscale(1);
+    assert!(ditherr_io::read_image(&output).unwrap() == expected.to_rgba8());
+
+    // Bad inputs fail with the file named.
+    for args in [
+        vec!["palette", "convert", "missing.gpl", s(&dir.path("x.hex"))],
+        vec!["palette", "convert", s(&gpl), "x.png"],
+        vec!["apply", s(&input), "--palette", "nope.hex", "-o", "x.png"],
+    ] {
+        let out = run(&args);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("error:"),
+            "{args:?}"
+        );
+    }
+}

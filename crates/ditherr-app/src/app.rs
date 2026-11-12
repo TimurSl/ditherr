@@ -9,13 +9,16 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 
 use ditherr_core::{presets, Look, Rgba8Image};
-use eframe::egui::{self, Color32, ColorImage, TextureHandle, TextureOptions};
+use ditherr_io::Edit;
+use eframe::egui::{self, Color32, TextureHandle, TextureOptions};
 
+use crate::loaded::{to_color_image, Loaded};
 use crate::quick::{
     self, apply_settings, starter_looks, Entry, PaletteChoice, Settings, COLOR_RANGE,
     CONTRAST_RANGE, PIXEL_SIZE_RANGE, STRENGTH_RANGE,
 };
-use crate::worker::{fit_within, scaled_look, Job, Worker, PREVIEW_EDGE, THUMB_EDGE};
+use crate::studio::Studio;
+use crate::worker::{scaled_look, Job, Worker, THUMB_EDGE};
 
 const PREVIEW_KEY: usize = 0;
 /// Random variations kept in the gallery; the oldest is dropped beyond this.
@@ -36,16 +39,10 @@ impl ExportFormat {
     }
 }
 
-/// An image that is loaded and ready to stylize.
-struct Loaded {
-    name: String,
-    original: Arc<Rgba8Image>,
-    /// What the live preview renders (the original, shrunk if it is large).
-    preview_src: Arc<Rgba8Image>,
-    thumb_src: Arc<Rgba8Image>,
-    preview_shrink: f32,
-    thumb_shrink: f32,
-    original_tex: TextureHandle,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Workspace {
+    Quick,
+    Studio,
 }
 
 #[derive(Default)]
@@ -56,6 +53,8 @@ struct Info {
 }
 
 pub struct App {
+    workspace: Workspace,
+    studio: Studio,
     previews: Worker,
     thumbs: Worker,
     image: Option<Loaded>,
@@ -93,6 +92,8 @@ impl App {
         let gallery = starter_looks();
         let settings = Settings::from_look(&gallery[0].look);
         let mut app = Self {
+            workspace: Workspace::Quick,
+            studio: Studio::new(repaint.clone()),
             previews: Worker::new(repaint.clone()),
             thumbs: Worker::new(repaint),
             image: None,
@@ -116,7 +117,11 @@ impl App {
             dirty: false,
         };
         if let Some(path) = open {
-            app.open_path(ctx, path);
+            if is_project(path) {
+                app.open_project(path);
+            } else {
+                app.open_path(ctx, path);
+            }
         }
         app
     }
@@ -131,29 +136,20 @@ impl App {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "image".into());
                 self.set_image(ctx, name, img);
+                if let Some(loaded) = &mut self.image {
+                    loaded.path = Some(path.to_path_buf());
+                }
             }
-            Err(e) => self.error = Some(e.to_string()),
+            Err(e) => {
+                let message = e.to_string();
+                self.studio.report_error(message.clone());
+                self.error = Some(message);
+            }
         }
     }
 
     fn set_image(&mut self, ctx: &egui::Context, name: String, img: Rgba8Image) {
-        let original = Arc::new(img);
-        let preview_src = Arc::new(fit_within(&original, PREVIEW_EDGE));
-        let thumb_src = Arc::new(fit_within(&original, THUMB_EDGE));
-        let original_tex = ctx.load_texture(
-            "original",
-            to_color_image(&preview_src),
-            TextureOptions::NEAREST,
-        );
-        self.image = Some(Loaded {
-            name,
-            preview_shrink: preview_src.width as f32 / original.width as f32,
-            thumb_shrink: thumb_src.width as f32 / original.width as f32,
-            original,
-            preview_src,
-            thumb_src,
-            original_tex,
-        });
+        self.image = Some(Loaded::new(ctx, name, img, None));
         self.error = None;
         self.notice = None;
         self.preview_tex = None;
@@ -163,6 +159,24 @@ impl App {
         }
         self.submit_all_thumbs();
         self.dirty = true;
+        self.studio.image_changed();
+    }
+
+    /// Opens a project file: Studio takes the edit and asks for its source
+    /// image, which [`App::show`] then loads.
+    fn open_project(&mut self, path: &Path) {
+        match self.studio.open_project(path) {
+            Ok(()) => self.workspace = Workspace::Studio,
+            Err(e) => self.studio.report_error(e),
+        }
+    }
+
+    /// Hands the current Quick Stylize look to Studio with every setting exposed.
+    fn open_in_studio(&mut self) {
+        let look = self.current_look();
+        self.studio
+            .load_edit(Edit::from_look(look), "From Quick Stylize");
+        self.workspace = Workspace::Studio;
     }
 
     // ---- rendering -----------------------------------------------------
@@ -183,6 +197,7 @@ impl App {
                 tag: self.seq,
                 src: Arc::clone(&img.preview_src),
                 look,
+                measure: false,
             },
         );
     }
@@ -194,6 +209,7 @@ impl App {
             tag: self.thumb_epoch,
             src: Arc::clone(&img.thumb_src),
             look: scaled_look(&self.gallery[idx].look, img.thumb_shrink),
+            measure: false,
         })
     }
 
@@ -358,16 +374,27 @@ impl App {
         self.handle_drops(&ctx);
 
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui, &ctx));
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::Panel::left("looks")
-            .default_size(340.0)
-            .min_size(260.0)
-            .show(ui, |ui| self.side_panel(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.preview(ui));
+        // A project that was just opened names the image it was made from.
+        if let Some(source) = self.studio.take_pending_source() {
+            self.open_path(&ctx, &source);
+        }
 
-        if self.dirty {
-            self.dirty = false;
-            self.submit_preview();
+        match self.workspace {
+            Workspace::Quick => {
+                egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+                egui::Panel::left("looks")
+                    .default_size(340.0)
+                    .min_size(260.0)
+                    .show(ui, |ui| self.side_panel(ui));
+                egui::CentralPanel::default().show(ui, |ui| self.preview(ui));
+
+                // Quick Stylize renders only while it is on screen.
+                if self.dirty {
+                    self.dirty = false;
+                    self.submit_preview();
+                }
+            }
+            Workspace::Studio => self.studio.show(ui, self.image.as_ref()),
         }
         if self.export_rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -379,13 +406,20 @@ impl App {
         // Desktop only: a dropped file always has a real path. The last one wins.
         if let Some(file) = dropped.last() {
             let path = file.path().to_path_buf();
-            self.open_path(ctx, &path);
+            if is_project(&path) {
+                self.open_project(&path);
+            } else {
+                self.open_path(ctx, &path);
+            }
         }
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             ui.heading("Ditherr");
+            ui.separator();
+            ui.selectable_value(&mut self.workspace, Workspace::Quick, "Quick Stylize");
+            ui.selectable_value(&mut self.workspace, Workspace::Studio, "Studio");
             ui.separator();
             if ui.button("Open…").clicked() {
                 self.open_dialog(ctx);
@@ -396,29 +430,37 @@ impl App {
                     img.name, img.original.width, img.original.height
                 ));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_enabled_ui(self.image.is_some() && self.export_rx.is_none(), |ui| {
-                    if ui.button("Export").clicked() {
-                        self.export();
-                    }
-                });
-                egui::ComboBox::from_id_salt("scale")
-                    .selected_text(format!("{}×", self.export_factor))
-                    .width(50.0)
-                    .show_ui(ui, |ui| {
-                        for f in [1, 2, 4] {
-                            ui.selectable_value(&mut self.export_factor, f, format!("{f}×"));
-                        }
-                    });
-                egui::ComboBox::from_id_salt("format")
-                    .selected_text(self.export_format.extension().to_uppercase())
-                    .width(60.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.export_format, ExportFormat::Png, "PNG");
-                        ui.selectable_value(&mut self.export_format, ExportFormat::Gif, "GIF");
-                    });
-            });
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| match self.workspace {
+                    Workspace::Quick => self.quick_export_controls(ui),
+                    Workspace::Studio => self.studio.toolbar(ui, self.image.as_ref()),
+                },
+            );
         });
+    }
+
+    fn quick_export_controls(&mut self, ui: &mut egui::Ui) {
+        ui.add_enabled_ui(self.image.is_some() && self.export_rx.is_none(), |ui| {
+            if ui.button("Export").clicked() {
+                self.export();
+            }
+        });
+        egui::ComboBox::from_id_salt("scale")
+            .selected_text(format!("{}×", self.export_factor))
+            .width(50.0)
+            .show_ui(ui, |ui| {
+                for f in [1, 2, 4] {
+                    ui.selectable_value(&mut self.export_factor, f, format!("{f}×"));
+                }
+            });
+        egui::ComboBox::from_id_salt("format")
+            .selected_text(self.export_format.extension().to_uppercase())
+            .width(60.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.export_format, ExportFormat::Png, "PNG");
+                ui.selectable_value(&mut self.export_format, ExportFormat::Gif, "GIF");
+            });
     }
 
     fn side_panel(&mut self, ui: &mut egui::Ui) {
@@ -430,7 +472,7 @@ impl App {
                 for (idx, entry) in self.gallery.iter().enumerate() {
                     if thumbnail(
                         ui,
-                        entry,
+                        &entry.name,
                         self.thumb_tex[idx].as_ref(),
                         idx == self.selected,
                     )
@@ -445,9 +487,18 @@ impl App {
             }
 
             ui.add_space(8.0);
-            if ui.button("Randomize").clicked() {
-                self.randomize();
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Randomize").clicked() {
+                    self.randomize();
+                }
+                if ui
+                    .button("Open in Studio")
+                    .on_hover_text("Edit this look with every setting exposed")
+                    .clicked()
+                {
+                    self.open_in_studio();
+                }
+            });
 
             ui.separator();
             ui.strong("Adjust");
@@ -598,9 +649,15 @@ fn palette_picker(ui: &mut egui::Ui, choice: &mut PaletteChoice) -> bool {
     *choice != before
 }
 
-fn thumbnail(
+/// Whether `path` names a Ditherr project file.
+fn is_project(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case(ditherr_io::PROJECT_EXTENSION))
+}
+
+pub(crate) fn thumbnail(
     ui: &mut egui::Ui,
-    entry: &Entry,
+    name: &str,
     tex: Option<&TextureHandle>,
     selected: bool,
 ) -> egui::Response {
@@ -634,7 +691,7 @@ fn thumbnail(
     painter.text(
         egui::pos2(rect.center().x, rect.max.y - 3.0),
         egui::Align2::CENTER_BOTTOM,
-        &entry.name,
+        name,
         egui::FontId::proportional(12.0),
         if selected {
             visuals.strong_text_color()
@@ -642,16 +699,17 @@ fn thumbnail(
             visuals.text_color()
         },
     );
-    response.on_hover_text(&entry.name)
-}
-
-fn to_color_image(img: &Rgba8Image) -> ColorImage {
-    ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.data)
+    response.on_hover_text(name)
 }
 
 /// Renders the original image with `look`, upscales so that `factor == 1`
 /// matches the original size, and writes it to `path`.
-fn export_to(src: &Rgba8Image, look: &Look, factor: u32, path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn export_to(
+    src: &Rgba8Image,
+    look: &Look,
+    factor: u32,
+    path: &Path,
+) -> Result<PathBuf, String> {
     let rendered = ditherr_core::render(src, look).map_err(|e| e.to_string())?;
     let out = rendered.upscale(look.pixel_scale.max(1) * factor.max(1));
     ditherr_io::save(path, &out).map_err(|e| e.to_string())?;
