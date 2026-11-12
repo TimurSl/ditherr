@@ -10,7 +10,10 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ditherr_core::look::{dither_image, preprocess};
 use ditherr_core::{render, ImageF32, Look, Resampler, Rgba8Image};
+
+use crate::info::{self, Stats};
 
 /// Longest edge of the image the live preview works on. Larger sources are
 /// shrunk once on load; export always renders the original.
@@ -25,6 +28,9 @@ pub struct Job {
     pub tag: u64,
     pub src: Arc<Rgba8Image>,
     pub look: Look,
+    /// Also gather the info-panel statistics. They cost a PNG encode, so only
+    /// the Studio preview asks for them.
+    pub measure: bool,
 }
 
 #[derive(Debug)]
@@ -33,6 +39,8 @@ pub struct Output {
     pub image: Rgba8Image,
     pub colors: usize,
     pub took: Duration,
+    /// Present when the job asked to be measured.
+    pub stats: Option<Stats>,
 }
 
 pub struct Done {
@@ -97,17 +105,34 @@ impl Worker {
 
 fn run(job: &Job) -> Result<Output, String> {
     let start = Instant::now();
-    let rendered = render(&job.src, &job.look).map_err(|e| e.to_string())?;
+    // `render` is these two calls; split so the pre-processed image is on hand
+    // for the histogram.
+    let (rendered, working) = if job.measure {
+        let working = preprocess(&job.src, &job.look).map_err(|e| e.to_string())?;
+        let rendered = dither_image(&working, &job.look).map_err(|e| e.to_string())?;
+        (rendered, Some(working))
+    } else {
+        (
+            render(&job.src, &job.look).map_err(|e| e.to_string())?,
+            None,
+        )
+    };
     let colors = match &rendered {
         ditherr_core::Rendered::Indexed(i) => count_used(&i.indices, i.palette.len()),
         ditherr_core::Rendered::Truecolor(t) => count_truecolor(t),
     };
     // Back to the source's size so the chunky pixels are visible 1:1.
-    let image = rendered.upscale(job.look.pixel_scale).to_rgba8();
+    let upscaled = rendered.upscale(job.look.pixel_scale);
+    let stats = working.map(|w| {
+        // A failed encode only costs the size readout.
+        let png = ditherr_io::encode(&upscaled, ditherr_io::Format::Png).map_or(0, |b| b.len());
+        info::analyze(&w, &upscaled, png)
+    });
     Ok(Output {
-        image,
+        image: upscaled.to_rgba8(),
         colors,
         took: start.elapsed(),
+        stats,
     })
 }
 
@@ -191,6 +216,7 @@ mod tests {
                 tag: 0,
                 src,
                 look,
+                measure: false,
             },
         );
         let done = wait_for(&worker, 1);
@@ -201,6 +227,46 @@ mod tests {
         assert_eq!((out.image.width, out.image.height), (30, 21));
         assert_eq!(out.colors, 2);
         assert!(*repaints.lock().unwrap() >= 1);
+    }
+
+    #[test]
+    fn measured_jobs_carry_statistics_and_match_unmeasured_pixels() {
+        let worker = Worker::new(Arc::new(|| {}));
+        let src = image(40, 24);
+        let look = Look {
+            pixel_scale: 2,
+            ..Look::default()
+        };
+        let batch = worker.begin_batch();
+        for (key, measure) in [(0, false), (1, true)] {
+            worker.submit(
+                batch,
+                Job {
+                    key,
+                    tag: 0,
+                    src: Arc::clone(&src),
+                    look: look.clone(),
+                    measure,
+                },
+            );
+        }
+        let mut done = wait_for(&worker, 2);
+        done.sort_by_key(|d| d.key);
+        let plain = done[0].result.as_ref().unwrap();
+        let measured = done[1].result.as_ref().unwrap();
+        assert!(plain.stats.is_none());
+        // Splitting the pipeline to get the histogram must not change a pixel.
+        assert_eq!(plain.image, measured.image);
+
+        let stats = measured.stats.as_ref().unwrap();
+        assert_eq!(stats.colors, measured.colors);
+        assert_eq!(stats.histogram.len(), crate::info::HISTOGRAM_BINS);
+        // The histogram counts the dithered (pixel-scaled) image: 20x12.
+        assert_eq!(stats.histogram.iter().sum::<u32>(), 20 * 12);
+        assert_eq!(stats.pixels, 40 * 24);
+        assert!(stats.png_bytes > 0);
+        let used: u32 = stats.top_colors.iter().map(|c| c.1).sum();
+        assert_eq!(u64::from(used), stats.pixels);
     }
 
     #[test]
@@ -217,6 +283,7 @@ mod tests {
                     pixel_scale: 0,
                     ..Look::default()
                 },
+                measure: false,
             },
         );
         let done = wait_for(&worker, 1);
@@ -236,6 +303,7 @@ mod tests {
                 tag: 0,
                 src: Arc::clone(&big),
                 look: Look::default(),
+                measure: false,
             },
         );
         for key in 1..=5 {
@@ -246,6 +314,7 @@ mod tests {
                     tag: 0,
                     src: image(8, 8),
                     look: Look::default(),
+                    measure: false,
                 },
             );
         }
@@ -258,6 +327,7 @@ mod tests {
                 tag: 0,
                 src: image(8, 8),
                 look: Look::default(),
+                measure: false,
             },
         );
         let mut keys: Vec<usize> = Vec::new();

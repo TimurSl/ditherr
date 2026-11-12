@@ -24,6 +24,7 @@ pub mod preprocess;
 pub mod presets;
 pub mod quantizer;
 pub mod resize;
+pub mod stack;
 
 pub use buffer::{ImageF32, IndexedImage, Rendered, Rgba8Image};
 pub use color::Metric;
@@ -34,3 +35,4 @@ pub use look::{render, Look, LOOK_VERSION};
 pub use palette::PaletteSpec;
 pub use preprocess::{Rotation, Step};
 pub use resize::{Resampler, ResizeTarget};
+pub use stack::Layer;
